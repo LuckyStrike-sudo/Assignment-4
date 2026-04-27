@@ -26,13 +26,21 @@ class motionDetector:
         regions = regionprops(labels) # Get the properties of the labeled regions
         filtered = []
         for r in regions:
-            if r.area > 15 and r.area < 100:
+            minr, minc, maxr, maxc = r.bbox
+            h = maxr - minr
+            w = maxc - minc
+            ratio = h/w
+            if r.area > 50 and r.area < 400 and ratio > 0.5 and ratio < 2:
                 filtered.append(r)
 
         for r in filtered:
-            temp = kalman_filter.kalmanFilter(r.centroid, self.nextId)
+            y, x = r.centroid
+            temp = kalman_filter.kalmanFilter((x,y), self.nextId)
             self.potential.append(temp)
             self.nextId +=1
+            temp.seen += 1
+            temp.frames_since_update = 0
+            temp.bbox = r.bbox
 
     def update(self, frame):
         self.previousThreeFrames = self.previousThreeFrames[1:] + [frame]
@@ -40,16 +48,18 @@ class motionDetector:
         if len(self.tracking) != 0:
             for t in self.tracking:
                 t.predict()
-        if len(self.potential) != 0:
-            for p in self.potential:
-                p.predict()
         if self.frameCount % self.s != 0:
             for t in self.tracking:
                 t.frames_since_update += 1
                 if t.frames_since_update > self.alpha:
                     t.active = False
-                self.tracking = [t for t in self.tracking if t.active]
-            return
+            self.tracking = [t for t in self.tracking if t.active]
+            for p in self.potential:
+                p.frames_since_update += 1
+                if p.frames_since_update > self.alpha:
+                    p.active = False
+            self.potential = [p for p in self.potential if p.active]
+            return self.tracking
         
         diff1 = np.abs(self.previousThreeFrames[2].astype(np.int32) - self.previousThreeFrames[1].astype(np.int32)) # Absolute difference between the current frame and the previous frame
         diff2 = np.abs(self.previousThreeFrames[1].astype(np.int32) - self.previousThreeFrames[0].astype(np.int32)) # Absolute difference between the previous frame and the frame before that
@@ -61,13 +71,65 @@ class motionDetector:
         regions = regionprops(labels) # Get the properties of the labeled regions
         filtered = []
         for r in regions:
-            if r.area > 15 and r.area < 100:
+            minr, minc, maxr, maxc = r.bbox
+            h = maxr - minr
+            w = maxc - minc
+            ratio = h/w
+            if r.area > 50 and r.area < 400 and ratio > 0.5 and ratio < 2:
                 filtered.append(r)
-        centriods = [r.centroid for r in filtered]
+        centriods = []
+        for f in filtered:
+            y, x = f.centroid
+            centroid = (x,y)
+            centriods.append({'centroid': centroid, 'bbox': f.bbox})
         for t in self.tracking:
+            best = None
             for c in centriods:
-                if np.linalg.norm(np.array(t.x[:2]) - np.array(c)) < self.delta:
-                    t.update(np.array(c))
-                    t.frames_since_update = 0
-                    t.active = True
-                    break
+                centriod = c["centroid"]
+                diff = np.linalg.norm(np.array(centriod) - np.array((t.x[0], t.x[1])))
+                if best is None or diff < best[0]:
+                    best = (diff, c)
+            if best is not None and best[0] < self.delta:
+                match = best[1]
+                t.update(np.array(match["centroid"]))
+                t.bbox = match["bbox"]
+                centriods.remove(best[1])
+                t.frames_since_update = 0
+            else:
+                t.frames_since_update += 1
+                if t.frames_since_update > self.alpha:
+                    t.active = False
+        self.tracking = [t for t in self.tracking if t.active]
+
+        promoted = []
+        for p in self.potential:
+            best = None
+            for c in centriods:
+                diff = np.linalg.norm(np.array(c['centroid']) - np.array((p.x[0], p.x[1])))
+                if best is None or diff < best[0]:
+                    best = (diff, c)
+            if best is not None and best[0] < self.delta:
+                p.update(np.array(best[1]['centroid']))
+                p.bbox = best[1]["bbox"]
+                centriods.remove(best[1])
+                p.frames_since_update = 0
+                p.seen += 1
+                if p.seen >= self.alpha:
+                    if len(self.tracking) < self.N:
+                        self.tracking.append(p)
+                        promoted.append(p)
+            else:
+                p.frames_since_update += 1
+                if p.frames_since_update > self.alpha:
+                    p.active = False
+        self.potential = [p for p in self.potential if p.active and p not in promoted]
+
+
+        for c in centriods:
+            temp = kalman_filter.kalmanFilter(c["centroid"], self.nextId)
+            self.potential.append(temp)
+            self.nextId +=1
+            temp.seen += 1
+            temp.frames_since_update = 0
+            temp.bbox = c["bbox"]
+        return self.tracking

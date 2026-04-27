@@ -24,6 +24,8 @@ class kalmanFilter:
         self.positions = []  # List to store the positions of the tracked object
         self.frames_since_update = 0  # Counter for frames since the last update
         self.active = True  # Flag to indicate if the tracker is active
+        self.seen = 0  # Counter for the number of times the object has been seen
+        self.bbox = None  # Bounding box for the tracked object
 
     def predict(self):
         self.x = self.D @ self.x  # State prediction
